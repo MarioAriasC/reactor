@@ -16,8 +16,6 @@
 
 package reactor.fn.selector;
 
-import reactor.fn.HeaderResolver;
-
 import javax.annotation.Nullable;
 import java.util.HashMap;
 import java.util.Map;
@@ -25,8 +23,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A {@link reactor.fn.Selector} implementation based on the given regular expression. Parses it into a {@link Pattern}
- * for efficient matching against keys.
+ * A {@link Selector} implementation based on the given regular expression. Parses it into a {@link Pattern} for
+ * efficient matching against keys.
  * <p/>
  * An example of creating a regex Selector would be:
  * <p/>
@@ -39,7 +37,7 @@ import java.util.regex.Pattern;
  * @author Jon Brisbin
  * @author Andy Wilkinson
  */
-public class RegexSelector extends BaseSelector<Pattern> {
+public class RegexSelector extends ObjectSelector<Pattern> {
 
 	private final HeaderResolver headerResolver = new HeaderResolver() {
 		@Nullable
@@ -61,12 +59,23 @@ public class RegexSelector extends BaseSelector<Pattern> {
 	};
 
 	/**
-	 * Create a {@link reactor.fn.Selector} from the given regex pattern.
+	 * Create a {@link Selector} when the given regex pattern.
 	 *
 	 * @param pattern The regex String that will be compiled into a {@link Pattern}.
 	 */
 	public RegexSelector(String pattern) {
 		super(Pattern.compile(pattern));
+	}
+
+	/**
+	 * Creates a {@link Selector} based on the given regular expression.
+	 *
+	 * @param regex The regular expression to compile.
+	 * @return The new {@link Selector}.
+	 * @see {@link reactor.fn.selector.RegexSelector}
+	 */
+	public static Selector regexSelector(String regex) {
+		return new RegexSelector(regex);
 	}
 
 	@Override

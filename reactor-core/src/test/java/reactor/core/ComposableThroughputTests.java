@@ -20,8 +20,11 @@ import com.lmax.disruptor.YieldingWaitStrategy;
 import com.lmax.disruptor.dsl.ProducerType;
 import org.junit.Before;
 import org.junit.Test;
+import reactor.AbstractReactorTest;
+import reactor.S;
 import reactor.fn.Consumer;
 import reactor.fn.Function;
+import reactor.fn.support.Reduce;
 import reactor.fn.dispatch.Dispatcher;
 import reactor.fn.dispatch.RingBufferDispatcher;
 
@@ -33,7 +36,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * @author Jon Brisbin
  */
-public class ComposableThroughputTests {
+public class ComposableThroughputTests extends AbstractReactorTest {
 
 	static int length  = 500;
 	static int runs    = 1000;
@@ -52,17 +55,17 @@ public class ComposableThroughputTests {
 		latch = new CountDownLatch(length * runs * samples);
 	}
 
-	private Composable<Integer> createComposable(Dispatcher dispatcher) {
-		return new Composable<Integer>(dispatcher)
-				.map(new Function<Integer, Integer>() {
+	private Stream<Integer> createComposable(Dispatcher dispatcher) {
+		Stream<Integer> cInt = S.<Integer>defer().using(env).using(dispatcher).get();
+		cInt.map(new Function<Integer, Integer>() {
+			@Override
+			public Integer apply(Integer integer) {
+				return integer;
+			}
+		})
+				.reduce(new Function<Reduce<Integer, Integer>, Integer>() {
 					@Override
-					public Integer apply(Integer integer) {
-						return integer;
-					}
-				})
-				.reduce(new Function<Composable.Reduce<Integer, Integer>, Integer>() {
-					@Override
-					public Integer apply(Composable.Reduce<Integer, Integer> r) {
+					public Integer apply(Reduce<Integer, Integer> r) {
 						int last = (null != r.getLastValue() ? r.getLastValue() : 1);
 						return last + r.getNextValue();
 					}
@@ -73,10 +76,11 @@ public class ComposableThroughputTests {
 						latch.countDown();
 					}
 				});
+		return cInt;
 	}
 
 	private void doTest(Dispatcher dispatcher, String name) throws InterruptedException {
-		Composable<Integer> c = createComposable(dispatcher);
+		Stream<Integer> c = createComposable(dispatcher);
 		long start = System.currentTimeMillis();
 		for (int x = 0; x < samples; x++) {
 			for (int i = 0; i < runs; i++) {
@@ -86,7 +90,7 @@ public class ComposableThroughputTests {
 			}
 		}
 
-		latch.await(30, TimeUnit.SECONDS);
+		latch.await(1, TimeUnit.SECONDS);
 
 		long end = System.currentTimeMillis();
 		long elapsed = end - start;
@@ -95,26 +99,28 @@ public class ComposableThroughputTests {
 																		 name,
 																		 elapsed,
 																		 Math.round((length * runs * samples) / (elapsed * 1.0 / 1000)) + "/sec"));
+
+		dispatcher.shutdown();
 	}
 
 	@Test
 	public void testThreadPoolDispatcherComposableThroughput() throws InterruptedException {
-		doTest(Context.threadPoolDispatcher(), "thread pool");
+		doTest(env.getDispatcher("threadPoolExecutor"), "thread pool");
 	}
 
 	@Test
-	public void testWorkerDispatcherComposableThroughput() throws InterruptedException {
-		doTest(Context.nextWorkerDispatcher(), "worker");
+	public void testEventLoopDispatcherComposableThroughput() throws InterruptedException {
+		doTest(env.getDispatcher("eventLoop"), "event loop");
 	}
 
 	@Test
 	public void testRingBufferDispatcherComposableThroughput() throws InterruptedException {
-		doTest(Context.rootDispatcher(), "root");
+		doTest(env.getDispatcher("ringBuffer"), "ring buffer");
 	}
 
 	@Test
 	public void testSingleProducerRingBufferDispatcherComposableThroughput() throws InterruptedException {
-		doTest(new RingBufferDispatcher("test", 1, 1024, ProducerType.SINGLE, new YieldingWaitStrategy()), "single-producer ring buffer");
+		doTest(new RingBufferDispatcher("test", 1024, ProducerType.SINGLE, new YieldingWaitStrategy()), "single-producer ring buffer");
 	}
 
 }

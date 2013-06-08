@@ -16,96 +16,71 @@
 
 package reactor.fn.dispatch;
 
-import com.lmax.disruptor.EventFactory;
-import com.lmax.disruptor.EventHandler;
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.dsl.Disruptor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import reactor.fn.*;
-import reactor.support.NamedDaemonThreadFactory;
-
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
+
+import reactor.fn.Event;
+import reactor.fn.Supplier;
+import reactor.fn.cache.Cache;
+import reactor.fn.cache.LoadingCache;
+import reactor.support.NamedDaemonThreadFactory;
 
 /**
  * A {@code Dispatcher} that uses a {@link ThreadPoolExecutor} with an unbounded queue to execute {@link Task Tasks}.
  *
  * @author Andy Wilkinson
+ * @author Jon Brisbin
+ * @author Stephane Maldini
  */
-public final class ThreadPoolExecutorDispatcher implements Dispatcher {
+public final class ThreadPoolExecutorDispatcher extends AbstractDispatcher {
 
-	private static final Logger LOG = LoggerFactory.getLogger(ThreadPoolExecutorDispatcher.class);
-	private final RingBuffer<RingBufferTask> ringBuffer;
-	private final Disruptor<RingBufferTask>  disruptor;
-	private final ExecutorService            executor;
-	private volatile ConsumerInvoker invoker = new ConverterAwareConsumerInvoker();
+	private final ExecutorService       executor;
+	private final Cache<ThreadPoolTask> readyTasks;
 
-	@SuppressWarnings("unchecked")
+	/**
+	 * Creates a new {@literal ThreadPoolExecutorDispatcher} with the given {@literal poolSize} and {@literal backlog}.
+	 *
+	 * @param poolSize the pool size
+	 * @param backlog  the backlog size
+	 */
 	public ThreadPoolExecutorDispatcher(int poolSize, int backlog) {
-		executor = Executors.newFixedThreadPool(poolSize + 1, new NamedDaemonThreadFactory("thread-pool-executor"));
-
-		disruptor = new Disruptor<RingBufferTask>(
-				new EventFactory<RingBufferTask>() {
+		this.executor = Executors.newFixedThreadPool(
+				poolSize,
+				new NamedDaemonThreadFactory("thread-pool-executor-dispatcher")
+		);
+		this.readyTasks = new LoadingCache<ThreadPoolTask>(
+				new Supplier<ThreadPoolTask>() {
 					@Override
-					public RingBufferTask newInstance() {
-						return new RingBufferTask();
+					public ThreadPoolTask get() {
+						return new ThreadPoolTask();
 					}
 				},
 				backlog,
-				executor
+				200l
 		);
-		disruptor.handleEventsWith(new EventHandler<RingBufferTask>() {
-			@Override
-			public void onEvent(RingBufferTask task, long sequence, boolean endOfBatch) throws Exception {
-				task.reset();
-			}
-		});
-
-		ringBuffer = disruptor.start();
 	}
 
 	@Override
-	public ThreadPoolExecutorDispatcher destroy() {
-		disruptor.halt();
-		return this;
-	}
-
-	@Override
-	public ThreadPoolExecutorDispatcher stop() {
-		disruptor.shutdown();
+	public void shutdown() {
 		executor.shutdown();
-		return this;
+		super.shutdown();
 	}
 
 	@Override
-	public ThreadPoolExecutorDispatcher start() {
-		return this;
+	public void halt() {
+		executor.shutdownNow();
+		super.halt();
 	}
 
-	@Override
-	public boolean isAlive() {
-		return executor.isShutdown();
-	}
-
-	@Override
 	@SuppressWarnings("unchecked")
-	public <T> Task<T> nextTask() {
-		long l = ringBuffer.next();
-		RingBufferTask t = ringBuffer.get(l);
-		t.setSequenceId(l);
-		return (Task<T>) t;
+	@Override
+	protected <E extends Event<?>> Task<E> createTask() {
+		Task<E> t = (Task<E>) readyTasks.allocate();
+		return (null != t ? t : (Task<E>) new ThreadPoolTask());
 	}
 
-	private class RingBufferTask extends Task<Object> implements Runnable {
-		private long sequenceId;
-
-		private RingBufferTask setSequenceId(long sequenceId) {
-			this.sequenceId = sequenceId;
-			return this;
-		}
-
+	private class ThreadPoolTask extends Task<Event<Object>> implements Runnable {
 		@Override
 		public void submit() {
 			executor.submit(this);
@@ -114,25 +89,9 @@ public final class ThreadPoolExecutorDispatcher implements Dispatcher {
 		@Override
 		public void run() {
 			try {
-				for (Registration<? extends Consumer<? extends Event<?>>> reg : getConsumerRegistry().select(getKey())) {
-					if (reg.isCancelled() || reg.isPaused()) {
-						continue;
-					}
-					invoker.invoke(reg.getObject(), getConverter(), Void.TYPE, getEvent());
-					if (reg.isCancelAfterUse()) {
-						reg.cancel();
-					}
-				}
-				if (null != getCompletionConsumer()) {
-					invoker.invoke(getCompletionConsumer(), getConverter(), Void.TYPE, getEvent());
-				}
-			} catch (Throwable x) {
-				LOG.error(x.getMessage(), x);
-				if (null != getErrorConsumer()) {
-					getErrorConsumer().accept(x);
-				}
+				execute();
 			} finally {
-				ringBuffer.publish(sequenceId);
+				readyTasks.deallocate(this);
 			}
 		}
 	}

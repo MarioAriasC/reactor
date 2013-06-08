@@ -16,20 +16,17 @@
 
 package reactor.fn.selector;
 
-import reactor.fn.HeaderResolver;
-import reactor.fn.support.UriTemplate;
-
 import javax.annotation.Nullable;
 import java.util.Map;
 
 /**
- * A {@link reactor.fn.Selector} implementation based on the given string that is compiled into a {@link UriTemplate}.
+ * A {@link Selector} implementation based on the given string that is compiled into a {@link UriTemplate}.
  *
  * @author Jon Brisbin
  * @author Andy Wilkinson
  * @see {@link UriTemplate}
  */
-public class UriTemplateSelector extends BaseSelector<UriTemplate> {
+public class UriTemplateSelector extends ObjectSelector<UriTemplate> {
 
 	private final HeaderResolver headerResolver = new HeaderResolver() {
 		@Nullable
@@ -44,12 +41,24 @@ public class UriTemplateSelector extends BaseSelector<UriTemplate> {
 	};
 
 	/**
-	 * Create a selector from the given uri template string.
+	 * Create a selector when the given uri template string.
 	 *
 	 * @param tmpl The string to compile into a {@link UriTemplate}.
 	 */
 	public UriTemplateSelector(String tmpl) {
 		super(new UriTemplate(tmpl));
+	}
+
+	/**
+	 * Creates a {@link Selector} based on a URI template.
+	 *
+	 * @param uriTemplate The URI template to compile.
+	 * @return The new {@link Selector}.
+	 * @see {@link reactor.fn.selector.UriTemplate}
+	 * @see {@link reactor.fn.selector.UriTemplateSelector}
+	 */
+	public static Selector uriTemplateSelector(String uriTemplate) {
+		return new UriTemplateSelector(uriTemplate);
 	}
 
 	@Override

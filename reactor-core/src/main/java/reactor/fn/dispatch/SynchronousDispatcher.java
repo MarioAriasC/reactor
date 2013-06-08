@@ -16,73 +16,41 @@
 
 package reactor.fn.dispatch;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import reactor.fn.*;
+import reactor.fn.Event;
 
 /**
+ * A {@link Dispatcher} implementation that executes a {@link Task} immediately in the calling thread.
+ *
  * @author Jon Brisbin
  * @author Stephane Maldini
  */
-public class SynchronousDispatcher implements Dispatcher {
+public class SynchronousDispatcher extends BaseDispatcher {
 
-	private final ConsumerInvoker invoker = new ConverterAwareConsumerInvoker();
-
-	@Override
-	@SuppressWarnings({"unchecked"})
-	public <T> Task<T> nextTask() {
-		return (Task<T>) new SyncTask();
-	}
+	public static final Dispatcher INSTANCE = new SynchronousDispatcher();
 
 	@Override
-	public SynchronousDispatcher destroy() {
-		return this;
-	}
-
-	@Override
-	public SynchronousDispatcher stop() {
-		return this;
-	}
-
-	@Override
-	public SynchronousDispatcher start() {
-		return this;
-	}
-
-	@Override
-	public boolean isAlive() {
+	public boolean alive() {
 		return true;
 	}
 
-	private class SyncTask extends Task<Object> {
-		@Override
-		public void submit() {
-			try {
-				for (Registration<? extends Consumer<? extends Event<?>>> reg : getConsumerRegistry().select(getKey())) {
-					if (reg.isCancelled() || reg.isPaused()) {
-						continue;
-					}
-					if (null != reg.getSelector().getHeaderResolver()) {
-						getEvent().getHeaders().setAll(reg.getSelector().getHeaderResolver().resolve(getKey()));
-					}
-					invoker.invoke(reg.getObject(), getConverter(), Void.TYPE, getEvent());
-					if (reg.isCancelAfterUse()) {
-						reg.cancel();
-					}
-				}
-				if (null != getCompletionConsumer()) {
-					invoker.invoke(getCompletionConsumer(), getConverter(), Void.TYPE, getEvent());
-				}
-			} catch (Throwable x) {
-				Logger log = LoggerFactory.getLogger(BlockingQueueDispatcher.class);
-				if (log.isErrorEnabled()) {
-					log.error(x.getMessage(), x);
-				}
-				if (null != getErrorConsumer()) {
-					getErrorConsumer().accept(x);
-				}
-			}
-		}
+	@Override
+	public void shutdown() {
 	}
 
+	@Override
+	public void halt() {
+	}
+
+	@SuppressWarnings({ "unchecked" })
+	@Override
+	protected <E extends Event<?>> Task<E> createTask() {
+		return (Task<E>) new SyncTask();
+	}
+
+	private final class SyncTask extends Task<Event<?>> {
+		@Override
+		public void submit() {
+			execute();
+		}
+	}
 }

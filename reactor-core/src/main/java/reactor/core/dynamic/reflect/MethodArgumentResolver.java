@@ -17,7 +17,7 @@
 package reactor.core.dynamic.reflect;
 
 import reactor.fn.Function;
-import reactor.fn.Supports;
+import reactor.support.Supports;
 
 /**
  * @author Jon Brisbin

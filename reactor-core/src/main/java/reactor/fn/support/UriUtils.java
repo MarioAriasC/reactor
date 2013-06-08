@@ -13,9 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package reactor.fn.support;
 
-import reactor.support.Assert;
+import reactor.util.Assert;
 
 import java.io.ByteArrayOutputStream;
 import java.io.UnsupportedEncodingException;

@@ -14,62 +14,67 @@
  * limitations under the License.
  */
 
+
+
+
+
+
+
 package reactor.dispatch
-
-import reactor.Fn
-import reactor.core.Context
-import reactor.core.CachingRegistry
-import reactor.fn.Consumer
-import reactor.fn.Event
-import spock.lang.Specification
-
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 import static reactor.GroovyTestUtils.$
 import static reactor.GroovyTestUtils.consumer
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+import reactor.Fn
+import reactor.filter.PassThroughFilter
+import reactor.fn.Consumer
+import reactor.fn.Event
+import reactor.fn.dispatch.SynchronousDispatcher
+import reactor.fn.dispatch.ThreadPoolExecutorDispatcher
+import reactor.fn.registry.CachingRegistry
+import reactor.fn.routing.ArgumentConvertingConsumerInvoker;
+import reactor.fn.routing.ConsumerFilteringEventRouter;
+import spock.lang.Specification
+
 /**
  * @author Jon Brisbin
+ * @author Stephane Maldini
  */
 class DispatcherSpec extends Specification {
 
 	def "Dispatcher executes tasks in correct thread"() {
 
 		given:
-		def sameThread = Context.synchronousDispatcher()
-		def diffThread = Context.threadPoolDispatcher()
+		def sameThread = new SynchronousDispatcher()
+		def diffThread = new ThreadPoolExecutorDispatcher(1,128)
 		def currentThread = Thread.currentThread()
 		Thread taskThread = null
-		def registry = new CachingRegistry<Consumer<Event>>(null, null)
+		def registry = new CachingRegistry<Consumer<Event>>(null)
+		def eventRouter = new ConsumerFilteringEventRouter(new PassThroughFilter(), ArgumentConvertingConsumerInvoker
+				.DEFAULT)
 		def sel = $('test')
 		registry.register(sel, consumer {
 			taskThread = Thread.currentThread()
 		})
 
 		when: "a task is submitted"
-		def t = sameThread.nextTask()
-		t.key = 'test'
-		t.event = Fn.event("Hello World!")
-		t.consumerRegistry = registry
-		t.submit()
+		sameThread.dispatch('test', Event.wrap('Hello World!'), registry, null, eventRouter, null)
 
 		then: "the task thread should be the current thread"
 		currentThread == taskThread
 
 		when: "a task is submitted to the thread pool dispatcher"
 		def latch = new CountDownLatch(1)
-		t = diffThread.nextTask()
-		t.key = 'test'
-		t.event = Fn.event("Hello World!")
-		t.consumerRegistry = registry
-		t.setCompletionConsumer({ Event<String> ev -> latch.countDown() } as Consumer<Event<String>>)
-		t.submit()
+		diffThread.dispatch('test', Event.wrap('Hello World!'), registry, null, eventRouter, { Event<String> ev -> latch.countDown() } as Consumer<Event<String>>)
 
 		latch.await(5, TimeUnit.SECONDS) // Wait for task to execute
 
-		then: "the task thread should be different from the current thread"
+		then: "the task thread should be different when the current thread"
 		taskThread != currentThread
+		//!diffThread.shutdown()
 
 	}
 

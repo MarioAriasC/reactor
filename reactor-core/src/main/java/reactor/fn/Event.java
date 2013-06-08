@@ -17,7 +17,7 @@
 package reactor.fn;
 
 import com.eaio.uuid.UUID;
-import reactor.support.Assert;
+import reactor.util.Assert;
 
 import java.io.Serializable;
 import java.util.Collections;
@@ -34,7 +34,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class Event<T> {
 
-	private final UUID id = new UUID();
+	public static final Event<Void> NULL_EVENT = new Event<Void>(null);
+
+	private UUID    id;
 	private Headers headers;
 	private Object  replyTo;
 	private T       data;
@@ -49,11 +51,36 @@ public class Event<T> {
 	}
 
 	/**
+	 * Wrap the given object with an {@link Event}.
+	 *
+	 * @param obj The object to wrap.
+	 * @return The new {@link Event}.
+	 */
+	public static <T> Event<T> wrap(T obj) {
+		return new Event<T>(obj);
+	}
+
+	/**
+	 * Wrap the given object with an {@link Event} and set the {@link Event#replyTo} property to the given {@code key}.
+	 *
+	 * @param obj        The object to wrap.
+	 * @param replyToKey The key to use as a {@literal replyTo}.
+	 * @param <T>        The type of the given object.
+	 * @return The new {@link Event}.
+	 */
+	public static <T> Event<T> wrap(T obj, Object replyToKey) {
+		return new Event<T>(obj).setReplyTo(replyToKey);
+	}
+
+	/**
 	 * Get the globally-unique id of this event.
 	 *
 	 * @return Unique {@link UUID} of this event.
 	 */
-	public UUID getId() {
+	public synchronized UUID getId() {
+		if (null == id) {
+			id = new UUID();
+		}
 		return id;
 	}
 
@@ -62,7 +89,7 @@ public class Event<T> {
 	 *
 	 * @return
 	 */
-	public Headers getHeaders() {
+	public synchronized Headers getHeaders() {
 		if (null == headers) {
 			headers = new Headers();
 		}
@@ -144,7 +171,7 @@ public class Event<T> {
 		}
 
 		/**
-		 * Set all headers from the given {@link Map}.
+		 * Set all headers when the given {@link Map}.
 		 *
 		 * @param headers The map to use as the headers.
 		 * @return

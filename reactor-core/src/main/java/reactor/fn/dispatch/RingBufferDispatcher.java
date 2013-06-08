@@ -16,15 +16,22 @@
 
 package reactor.fn.dispatch;
 
-import com.lmax.disruptor.*;
-import com.lmax.disruptor.dsl.Disruptor;
-import com.lmax.disruptor.dsl.ProducerType;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import reactor.fn.*;
+
+import reactor.fn.Event;
 import reactor.support.NamedDaemonThreadFactory;
 
-import java.util.concurrent.Executors;
+import com.lmax.disruptor.EventFactory;
+import com.lmax.disruptor.EventHandler;
+import com.lmax.disruptor.ExceptionHandler;
+import com.lmax.disruptor.RingBuffer;
+import com.lmax.disruptor.WaitStrategy;
+import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
 
 /**
  * Implementation of a {@link Dispatcher} that uses a <a href="http://github.com/lmax-exchange/disruptor">Disruptor
@@ -33,46 +40,47 @@ import java.util.concurrent.Executors;
  * @author Jon Brisbin
  * @author Stephane Maldini
  */
-public class RingBufferDispatcher implements Dispatcher {
+public class RingBufferDispatcher extends AbstractDispatcher {
 
-	private final    RingBuffer<RingBufferTask> ringBuffer;
-	private final    Disruptor<RingBufferTask>  disruptor;
-	private volatile ConsumerInvoker            invoker;
+	private final ExecutorService            executor;
+	private final Disruptor<RingBufferTask<?>>  disruptor;
+	private final RingBuffer<RingBufferTask<?>> ringBuffer;
 
+	/**
+	 * Creates a new {@literal RingBufferDispatcher} with the given configuration.
+	 *
+	 * @param name         The name of the dispatcher
+	 * @param backlog      The backlog size to configuration the ring buffer with
+	 * @param producerType The producer type to configure the ring buffer with
+	 * @param waitStrategy The wait strategy to configure the ring buffer with
+	 */
 	@SuppressWarnings({"unchecked"})
 	public RingBufferDispatcher(String name,
-															int poolSize,
 															int backlog,
 															ProducerType producerType,
 															WaitStrategy waitStrategy) {
-		disruptor = new Disruptor<RingBufferTask>(
-				new EventFactory<RingBufferTask>() {
+		this.executor = Executors.newSingleThreadExecutor(new NamedDaemonThreadFactory(name + "-ringbuffer"));
+
+		this.disruptor = new Disruptor<RingBufferTask<?>>(
+				new EventFactory<RingBufferTask<?>>() {
+					@SuppressWarnings("rawtypes")
 					@Override
-					public RingBufferTask newInstance() {
+					public RingBufferTask<?> newInstance() {
 						return new RingBufferTask();
 					}
 				},
 				backlog,
-				Executors.newFixedThreadPool(poolSize, new NamedDaemonThreadFactory(name + "-dispatcher")),
+				executor,
 				producerType,
 				waitStrategy
 		);
-
 		disruptor.handleEventsWith(new RingBufferTaskHandler());
+		// Exceptions are handled by the errorConsumer
 		disruptor.handleExceptionsWith(
 				new ExceptionHandler() {
-					Logger log;
-
 					@Override
 					public void handleEventException(Throwable ex, long sequence, Object event) {
-						Logger log = LoggerFactory.getLogger(RingBufferDispatcher.class);
-						if (log.isErrorEnabled()) {
-							log.error(ex.getMessage(), ex);
-						}
-						Consumer<Throwable> a;
-						if (null != (a = ((Task<?>) event).getErrorConsumer())) {
-							a.accept(ex);
-						}
+						// Handled by Task.execute
 					}
 
 					@Override
@@ -93,45 +101,35 @@ public class RingBufferDispatcher implements Dispatcher {
 				}
 		);
 		ringBuffer = disruptor.start();
-
-		invoker = new ConverterAwareConsumerInvoker();
 	}
 
 	@Override
-	@SuppressWarnings({"unchecked"})
-	public <T> Task<T> nextTask() {
-		long l = ringBuffer.next();
-		RingBufferTask t = ringBuffer.get(l);
-		t.setSequenceId(l);
-		return (Task<T>) t;
-	}
-
-	@Override
-	public RingBufferDispatcher destroy() {
+	public void shutdown() {
+		executor.shutdown();
 		disruptor.shutdown();
-		return this;
+		super.shutdown();
 	}
 
 	@Override
-	public RingBufferDispatcher stop() {
+	public void halt() {
+		executor.shutdownNow();
 		disruptor.halt();
-		return this;
+		super.halt();
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
-	public RingBufferDispatcher start() {
-		return this;
+	protected <E extends Event<?>> Task<E> createTask() {
+		long l = ringBuffer.next();
+		RingBufferTask<?> t = ringBuffer.get(l);
+		t.setSequenceId(l);
+		return (Task<E>) t;
 	}
 
-	@Override
-	public boolean isAlive() {
-		return ringBuffer.remainingCapacity() > 0;
-	}
-
-	private class RingBufferTask extends Task<Object> {
+	private class RingBufferTask<E extends Event<?>> extends Task<E> {
 		private long sequenceId;
 
-		private RingBufferTask setSequenceId(long sequenceId) {
+		private RingBufferTask<E> setSequenceId(long sequenceId) {
 			this.sequenceId = sequenceId;
 			return this;
 		}
@@ -142,24 +140,10 @@ public class RingBufferDispatcher implements Dispatcher {
 		}
 	}
 
-	private class RingBufferTaskHandler implements EventHandler<RingBufferTask> {
+	private class RingBufferTaskHandler implements EventHandler<RingBufferTask<?>> {
 		@Override
-		public void onEvent(RingBufferTask t, long sequence, boolean endOfBatch) throws Exception {
-			for (Registration<? extends Consumer<? extends Event<?>>> reg : t.getConsumerRegistry().select(t.getKey())) {
-				if (reg.isCancelled() || reg.isPaused()) {
-					continue;
-				}
-				if (null != reg.getSelector().getHeaderResolver()) {
-					t.getEvent().getHeaders().setAll(reg.getSelector().getHeaderResolver().resolve(t.getKey()));
-				}
-				invoker.invoke(reg.getObject(), t.getConverter(), Void.TYPE, t.getEvent());
-				if (reg.isCancelAfterUse()) {
-					reg.cancel();
-				}
-			}
-			if (null != t.getCompletionConsumer()) {
-				invoker.invoke(t.getCompletionConsumer(), t.getConverter(), Void.TYPE, t.getEvent());
-			}
+		public void onEvent(RingBufferTask<?> t, long sequence, boolean endOfBatch) throws Exception {
+			t.execute();
 		}
 	}
 

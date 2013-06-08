@@ -19,7 +19,10 @@ package reactor.fn;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import reactor.core.CachingRegistry;
+import reactor.fn.registry.CachingRegistry;
+import reactor.fn.registry.Registration;
+import reactor.fn.registry.Registry;
+import reactor.fn.selector.Selector;
 
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -39,7 +42,7 @@ public class SelectorUnitTests {
 	@Test
 	public void testSelectionThroughput() throws Exception {
 		final AtomicLong counter = new AtomicLong(selectors * iterations);
-		Registry<Consumer<?>> registry = new CachingRegistry<Consumer<?>>(null, null);
+		Registry<Consumer<?>> registry = new CachingRegistry<Consumer<?>>(null);
 
 		Consumer<?> hello = new Consumer<Object>() {
 			@Override
@@ -75,7 +78,7 @@ public class SelectorUnitTests {
 	@Test
 	public void testUriTemplateSelectorThroughput() throws Exception {
 		final AtomicLong counter = new AtomicLong(selectors * iterations);
-		Registry<Consumer<?>> registry = new CachingRegistry<Consumer<?>>(null, null);
+		Registry<Consumer<?>> registry = new CachingRegistry<Consumer<?>>(null);
 
 		Consumer<?> hello = new Consumer<Object>() {
 			@Override

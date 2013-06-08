@@ -18,24 +18,25 @@ package reactor.core;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import reactor.Fn;
-import reactor.fn.Consumer;
-import reactor.fn.Event;
-import reactor.fn.Function;
+import reactor.fn.*;
 import reactor.fn.Observable;
 import reactor.fn.dispatch.Dispatcher;
+import reactor.fn.tuples.Tuple;
+import reactor.fn.tuples.Tuple2;
+import reactor.util.Assert;
 
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 
 /**
- * A {@literal Promise} is a {@link Composable} that can only be used once. When created, it starts with a state of
- * {@link State#PENDING}. If a value of type {@link Throwable} is set, then the {@literal Promise} transitions to state
- * {@link State#FAILURE} and the error handlers are called. If a value of type <code>&lt;T&gt;</code> is set instead,
- * the {@literal Promise} transitions to state {@link State#SUCCESS}.
+ * A {@literal Promise} is a {@link Stream} that can only be used once. When created, it is pending. If a value of
+ * type {@link Throwable} is set, then the {@literal Promise} is completed {@link #isError in error} and the error
+ * handlers are called. If a value of type <code>&lt;T&gt;</code> is set instead, the {@literal Promise} is completed
+ * {@link #isSuccess successfully}.
  * <p/>
  * Calls to {@link reactor.core.Promise#get()} are always non-blocking. If it is desirable to block the calling thread
  * until a result is available, though, call the {@link Promise#await(long, java.util.concurrent.TimeUnit)} method.
+ *
+ * @param <T> The {@link Promise} output type.
  *
  * @author Jon Brisbin
  * @author Stephane Maldini
@@ -43,142 +44,29 @@ import java.util.List;
  */
 public class Promise<T> extends Composable<T> {
 
-	/**
-	 * A {@literal Promise} can only be in state {@link State#PENDING}, {@link State#SUCCESS}, or {@link State#FAILURE}.
-	 */
-	public enum State {
-		/**
-		 * Means this {@literal Promise} has not been fulfilled yet.
-		 */
-		PENDING,
-		/**
-		 * Means this {@literal Promise} contains a value of type <code>&lt;T&gt;</code>
-		 */
-		SUCCESS,
-		/**
-		 * Means this {@literal Promise} contains an error. Any calls to {@link reactor.core.Promise#get()} will result in the
-		 * error being thrown.
-		 */
-		FAILURE
-	}
-
 	private final Logger log = LoggerFactory.getLogger(getClass());
 
-	private volatile State state = State.PENDING;
-
-	/**
-	 * Create a {@literal Promise} based on the given {@link Observable}.
-	 *
-	 * @param src The {@link Observable} to use when publishing events internally.
-	 */
-	public Promise(Observable src) {
-		super(src);
-		expectedAcceptCount.set(1);
-	}
-
-	/**
-	 * Create a {@literal Promise} with default behavior.
-	 */
-	public Promise() {
-		this((Dispatcher) null);
-	}
-
-	public Promise(Dispatcher dispatcher) {
-		super(dispatcher);
-		expectedAcceptCount.set(1);
-		observable.on(Fn.T(Throwable.class), new Consumer<Event<Throwable>>() {
+	Promise(Environment env, Observable src) {
+		super(env, src);
+		setExpectedAcceptCount(1);
+		getObservable().on(Functions.T(Throwable.class), new Consumer<Event<Throwable>>() {
 			@Override
 			public void accept(Event<Throwable> throwableEvent) {
-				if (state == State.PENDING) {
-					Promise.this.set(throwableEvent.getData());
-				} else {
-					log.error(throwableEvent.getData().getMessage(), throwableEvent.getData());
+				synchronized (monitor) {
+					if (!isComplete()) {
+						Promise.this.set(throwableEvent.getData());
+					} else {
+						log.error(throwableEvent.getData().getMessage(), throwableEvent.getData());
+					}
 				}
 			}
 		});
 	}
 
-	/**
-	 * Create a {@literal Promise}.
-	 *
-	 * @param <T> The type of the value.
-	 * @return The new {@literal Promise}.
-	 */
-	public static <T> Promise<T> create() {
-		return new Promise<T>();
-	}
 
 	/**
-	 * Create a {@literal Promise} that uses a synchronous {@link Dispatcher}.
-	 *
-	 * @param <T> The type of the value.
-	 * @return The new {@literal Promise}.
-	 * @see {@link reactor.core.Context#synchronousDispatcher()}
-	 */
-	public static <T> Promise<T> sync() {
-		return new Promise<T>(Context.synchronousDispatcher());
-	}
-
-	/**
-	 * Create a {@literal Promise} that uses a synchronous {@link Dispatcher}.
-	 *
-	 * @param reason The error to set the value of this {@literal Promise} to.
-	 * @param <T>    The type of the value.
-	 * @return The new {@literal Promise}.
-	 * @see {@link reactor.core.Context#synchronousDispatcher()}
-	 */
-	public static <T> Promise<T> sync(Throwable reason) {
-		return Promise.<T>sync().set(reason);
-	}
-
-	/**
-	 * Create a {@literal Promise} using the given value which uses a synchronous {@link Dispatcher}.
-	 *
-	 * @param value The value of the {@literal Promise}.
-	 * @param <T>   The type of the value.
-	 * @return The new {@literal Promise}.
-	 * @see {@link reactor.core.Context#synchronousDispatcher()}
-	 */
-	public static <T> Promise<T> sync(T value) {
-		return Promise.<T>sync().set(value);
-	}
-
-	/**
-	 * Create a {@literal Promise} based on the given exception.
-	 *
-	 * @param reason The exception to use as the value.
-	 * @param <T>    The type of the intended {@literal Promise} value.
-	 * @return The new {@literal Promise}.
-	 */
-	@SuppressWarnings("unchecked")
-	public static <T> Builder<T> from(Throwable reason) {
-		return (Builder<T>) new Builder<Object>(Arrays.asList((Object) reason));
-	}
-
-	/**
-	 * Create a {@literal Promise} based on the given value.
-	 *
-	 * @param value The value to use.
-	 * @param <T>   The type of the value.
-	 * @return The new {@literal Promise}.
-	 */
-	@SuppressWarnings("unchecked")
-	public static <T> Builder<T> from(T value) {
-		return new Builder<T>(Arrays.asList(value));
-	}
-
-	/**
-	 * Get the state the {@literal Promise} is currently in.
-	 *
-	 * @return One of {@link State#PENDING}, {@link State#SUCCESS}, or {@link State#FAILURE}.
-	 */
-	public State getState() {
-		return this.state;
-	}
-
-	/**
-	 * Set this {@literal Promise} to state {@link State#FAILURE} and set the value of the {@literal Promise} so that
-	 * subsequent calls to {@link reactor.core.Promise#get()} will throw this exception instead of returning a value.
+	 * Set the value of the {@literal Promise} so that subsequent calls to {@link reactor.core.Promise#get()} will throw
+	 * this exception instead of returning a value.
 	 *
 	 * @param error The exception to use.
 	 * @return {@literal this}
@@ -186,24 +74,22 @@ public class Promise<T> extends Composable<T> {
 	public Promise<T> set(Throwable error) {
 		synchronized (monitor) {
 			assertPending();
-			this.state = State.FAILURE;
+			super.accept(error);
 		}
-		super.accept(error);
 		return this;
 	}
 
 	/**
-	 * Set this {@literal Promise} to state {@link State#SUCCESS} and set the internal value to the given value.
+	 * Set this {@literal Promise} to the given value.
 	 *
-	 * @param value The value to use.
+	 * @param value The value to set.
 	 * @return {@literal this}
 	 */
 	public Promise<T> set(T value) {
 		synchronized (monitor) {
 			assertPending();
-			this.state = State.SUCCESS;
+			super.accept(value);
 		}
-		super.accept(value);
 		return this;
 	}
 
@@ -215,6 +101,7 @@ public class Promise<T> extends Composable<T> {
 	 * @return {@literal this}
 	 */
 	public Promise<T> onComplete(final Consumer<Promise<T>> onComplete) {
+		Assert.notNull(onComplete);
 		onSuccess(new Consumer<T>() {
 			@Override
 			public void accept(T t) {
@@ -237,6 +124,7 @@ public class Promise<T> extends Composable<T> {
 	 * @return {@literal this}
 	 */
 	public Promise<T> onSuccess(Consumer<T> onSuccess) {
+		Assert.notNull(onSuccess);
 		consume(onSuccess);
 		return this;
 	}
@@ -248,6 +136,7 @@ public class Promise<T> extends Composable<T> {
 	 * @return {@literal this}
 	 */
 	public Promise<T> onError(Consumer<Throwable> onError) {
+		Assert.notNull(onError);
 		when(Throwable.class, onError);
 		return this;
 	}
@@ -260,8 +149,12 @@ public class Promise<T> extends Composable<T> {
 	 * @return {@literal this}
 	 */
 	public Promise<T> then(Consumer<T> onSuccess, Consumer<Throwable> onError) {
-		onSuccess(onSuccess);
-		onError(onError);
+		if (null != onSuccess) {
+			onSuccess(onSuccess);
+		}
+		if (null != onError) {
+			onError(onError);
+		}
 		return this;
 	}
 
@@ -273,124 +166,127 @@ public class Promise<T> extends Composable<T> {
 	 * @param onError   The {@link Consumer} to invoke on failure.
 	 * @return {@literal this}
 	 */
-	public <V> Composable<V> then(Function<T, V> onSuccess, Consumer<Throwable> onError) {
-		Composable<V> c = map(onSuccess);
-		c.when(Throwable.class, onError);
+	public <V> Promise<V> then(Function<T, V> onSuccess, Consumer<Throwable> onError) {
+		Promise<V> c = map(onSuccess);
+		if (null != onError) {
+			onError(onError);
+		}
 		return c;
 	}
 
+	/**
+	 * Indicates if this {@literal Promise} has been successfully completed
+	 *
+	 * @return {@literal true} if fulfilled successfully, otherwise {@literal false}.
+	 */
+	public boolean isSuccess() {
+		return acceptCountReached();
+	}
+
+	/**
+	 * Indicates if this {@literal Promise} has completed in error
+	 *
+	 * @return {@literal true} if the promise completed in error, otherwise {@literal false}.
+	 */
 	@Override
-	public Composable<T> consume(final Consumer<T> consumer) {
-		switch (state) {
-			case SUCCESS: {
-				R.schedule(consumer, value, observable);
+	public boolean isError() {
+		return super.isError();
+	}
+
+	/**
+	 * Indicates if this {@literal Promise} is still pending
+	 *
+	 * @return {@literal true} if pending, otherwise {@literal false}.
+	 */
+	public boolean isPending() {
+		return !isComplete();
+	}
+
+	@Override
+	public Promise<T> consume(final Consumer<T> consumer) {
+		synchronized (monitor) {
+			if (isError()) {
 				return this;
-			}
-			case FAILURE:
-				assertSuccess();
-			default:
-				return super.consume(consumer);
-		}
-	}
-
-	@Override
-	public Composable<T> consume(Object key, Observable observable) {
-		switch (state) {
-			case SUCCESS: {
-				observable.notify(key, Fn.event(value));
+			} else if (acceptCountReached()) {
+				Functions.schedule(consumer, getValue(), getObservable());
 				return this;
+			} else {
+				return (Promise<T>) super.consume(consumer);
 			}
-			case FAILURE:
-				assertSuccess();
-			default:
-				return super.consume(key, observable);
 		}
 	}
 
 	@Override
-	public Composable<T> first() {
-		switch (state) {
-			case SUCCESS: {
-				Composable<T> c = super.first();
-				c.accept(value);
-				return c;
+	public Promise<T> consume(Object key, Observable observable) {
+		synchronized (monitor) {
+			if (acceptCountReached()) {
+				observable.notify(key, Event.wrap(getValue()));
+				return this;
+			} else {
+				return (Promise<T>) super.consume(key, observable);
 			}
-			case FAILURE:
-				assertSuccess();
-			default:
-				return super.first();
 		}
 	}
 
 	@Override
-	public Composable<T> last() {
-		switch (state) {
-			case SUCCESS: {
-				Composable<T> c = super.last();
-				c.accept(value);
-				return c;
-			}
-			case FAILURE:
-				assertSuccess();
-			default:
-				return super.last();
-		}
-	}
-
-	@Override
-	public <V> Composable<V> map(final Function<T, V> fn) {
-		switch (state) {
-			case SUCCESS: {
-				final Composable<V> c = createComposable(createObservable(observable));
-				R.schedule(new Consumer<T>() {
+	public <V> Promise<V> map(final Function<T, V> fn) {
+		synchronized (monitor) {
+			if (acceptCountReached()) {
+				final Promise<V> c = (Promise<V>) this.assignComposable(getObservable());
+				Functions.schedule(new Consumer<T>() {
 					@Override
 					public void accept(T value) {
 						try {
 							c.accept(fn.apply(value));
 						} catch (Throwable t) {
-							c.observable.notify(Fn.T(t.getClass()), Fn.event(t));
-							c.decreaseAcceptLength();
+							handleError(c, t);
 						}
 					}
-				}, value, observable);
+				}, getValue(), getObservable());
 				return c;
+			} else {
+				return (Promise<V>) super.map(fn);
 			}
-			case FAILURE:
-				assertSuccess();
-			default:
-				return super.map(fn);
+		}
+	}
+
+
+
+	@Override
+	public Promise<T> filter(final Function<T, Boolean> fn) {
+		synchronized (monitor) {
+			final Promise<T> p = createFuture(getObservable());
+
+			Consumer<T> consumer = new Consumer<T>() {
+				@Override
+				public void accept(T value) {
+					try {
+						if (fn.apply(value)) {
+							p.accept(value);
+						} else {
+							p.accept(new FilterException());
+						}
+					} catch (Throwable t) {
+						handleError(p, t);
+					}
+				}
+			};
+
+			if (acceptCountReached()) {
+				Functions.schedule(consumer, getValue(), getObservable());
+			} else {
+				consume(consumer);
+			}
+			return p;
 		}
 	}
 
 	@Override
-	public Composable<T> filter(final Function<T, Boolean> fn) {
-		switch (state) {
-			case SUCCESS: {
-				final Composable<T> c = createComposable(createObservable(observable));
-				R.schedule(new Consumer<T>() {
-					@Override
-					public void accept(T value) {
-						try {
-							if (fn.apply(value)) {
-								c.accept(value);
-							} else {
-								c.decreaseAcceptLength();
-							}
-						} catch (Throwable t) {
-							c.observable.notify(Fn.T(t.getClass()), Fn.event(t));
-							c.decreaseAcceptLength();
-						}
-					}
-				}, value, observable);
-				return c;
-			}
-			case FAILURE:
-				assertSuccess();
-			default:
-				return super.filter(fn);
-		}
+	public <E extends Throwable> Promise<T> when(Class<E> exceptionType, Consumer<E> onError) {
+		return (Promise<T>)super.when(exceptionType, onError);
 	}
 
+	@Override
 	public void accept(Throwable error) {
 		set(error);
 	}
@@ -401,74 +297,135 @@ public class Promise<T> extends Composable<T> {
 	}
 
 	@Override
-	public T get() {
-		assertSuccess();
-		return super.get();
-	}
-
-	@Override
-	protected <U> Composable<U> createComposable(Observable src) {
-		return new Promise<U>(src);
-	}
-
-	private void assertSuccess() {
-		if (state == State.FAILURE) {
-			throw new IllegalStateException(error);
-		}
+	protected <U> Promise<U> createFuture(Observable src) {
+		final Promise<U> p = new Promise<U>(getEnvironment(), src);
+		forwardError(p);
+		return p;
 	}
 
 	private void assertPending() {
-		if (state != State.PENDING) {
-			throw new IllegalStateException("This Promise has already completed.");
+		synchronized (monitor) {
+			if (!isPending()) {
+				throw new IllegalStateException("This Promise has already completed.");
+			}
 		}
+	}
+
+
+	@SuppressWarnings("unchecked")
+	protected Promise<T> merge(Collection<? extends Composable<?>> composables) {
+
+		final int size = composables.size();
+		if (size < 1) {
+			return this;
+		} else if (composables.size() == 1) {
+			composables.iterator().next().consume(new Consumer() {
+				@Override
+				public void accept(Object t) {
+					Promise.this.accept((T) Arrays.asList(t));
+				}
+			});
+			return this;
+		}
+
+		final Stream<Tuple2<?, Integer>> reducer =
+				new Stream.DeferredStream<Tuple2<?, Integer>>(getEnvironment(), getObservable(), size);
+		reducer
+				.reduce()
+				.map(new Function<List<Tuple2<?, Integer>>, T>() {
+					@Override
+					public T apply(List<Tuple2<?, Integer>> collection) {
+						Collections.sort(collection, new Comparator<Tuple2<?, Integer>>() {
+							@Override
+							public int compare(Tuple2<?, Integer> o1, Tuple2<?, Integer> o2) {
+								return o1.getT2().compareTo(o2.getT2());
+							}
+						});
+						List<Object> orderedResult = new ArrayList<Object>();
+						for (Tuple2<?, Integer> element : collection) {
+							orderedResult.add(element.getT1());
+						}
+						return (T) orderedResult;
+					}
+				}).consume(this);
+
+		Consumer<Object> consumer = new Consumer<Object>() {
+			int i = 0;
+
+			@Override
+			public void accept(Object o) {
+				reducer.accept(Tuple.of(o, i++));
+			}
+		};
+
+		for (final Composable c : composables) {
+			c.forwardError(reducer).consume(consumer);
+			if (Stream.DeferredStream.class.isInstance(c)) {
+				((Stream.DeferredStream) c).delayedAccept();
+			}
+		}
+
+		return this;
 	}
 
 	/**
-	 * Build a {@link Composable} based on the given values, {@link Dispatcher dispatcher}, and {@link Reactor reactor}.
+	 * Build a {@link Stream} based on the given values, {@link Dispatcher dispatcher}, and {@link Reactor reactor}.
 	 *
 	 * @param <T> The type of the values.
 	 */
-	public static class Builder<T> extends Composable.Builder<T> {
+	public static class Spec<T> extends ComponentSpec<Spec<T>, Promise<T>> {
 
-		Builder(Iterable<T> values) {
-			super(values);
+		protected final T                                   value;
+		protected final Throwable                           error;
+		protected final Supplier<T>                         supplier;
+		protected final Collection<? extends Composable<?>> mergeWith;
+
+		public Spec(T value, Supplier<T> supplier, Throwable error, Collection<? extends Composable<?>> composables) {
+			this.value = value;
+			this.supplier = supplier;
+			this.error = error;
+			this.mergeWith = composables;
 		}
 
 		@Override
-		public Builder<T> using(Reactor reactor) {
-			super.using(reactor);
-			return this;
-		}
-
-		@Override
-		public Builder<T> using(Dispatcher dispatcher) {
-			super.using(dispatcher);
-			return this;
-		}
-
-		public Promise<T> build() {
-			if (null == reactor) {
-				if (null == dispatcher) {
-					reactor = new Reactor();
-				} else {
-					reactor = new Reactor(dispatcher);
+		protected Promise<T> configure(Reactor reactor) {
+			final Promise<T> prom;
+			if (null != error) {
+				prom = new Promise<T>(env, reactor).set(error);
+			} else if (supplier != null) {
+				prom = new Promise<T>(env, reactor);
+				Functions.schedule(new Consumer<Object>() {
+					@Override
+					public void accept(Object o) {
+						try {
+							prom.set(supplier.get());
+						} catch (Throwable t) {
+							prom.set(t);
+						}
+					}
+				}, null, reactor);
+			} else if (null != value) {
+				prom = new Promise<T>(env, reactor).set(value);
+			} else {
+				prom = new Promise<T>(env, reactor);
+				if (null != mergeWith) {
+					prom.merge(mergeWith);
 				}
 			}
-			T value = null;
-			if (List.class.isInstance(values)) {
-				List<T> l = (List<T>) values;
-				if (!l.isEmpty()) {
-					value = ((List<T>) values).get(0);
-				}
-			} else {
-				value = values.iterator().next();
-			}
-			if (Throwable.class.isInstance(value)) {
-				return new Promise<T>(reactor).set((Throwable) value);
-			} else {
-				return new Promise<T>(reactor).set(value);
-			}
+			return prom;
 		}
 	}
 
+
+	/**
+	 * A {@code FilteredException} is used to {@link Promise#set(Throwable) complete} a {@link Promise#filter(Function)
+	 * filtered promise} when the filter rejects the value.
+	 *
+	 * @author Andy Wilkinson
+	 */
+	public static final class FilterException extends RuntimeException {
+
+		private static final long serialVersionUID = 1244572252678542067L;
+
+	}
 }

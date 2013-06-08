@@ -16,22 +16,12 @@
 
 package reactor.core.dynamic;
 
-import java.lang.annotation.Annotation;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-
 import reactor.Fn;
 import reactor.convert.Converter;
-import reactor.core.Context;
-import reactor.core.R;
+import reactor.core.Environment;
+import reactor.R;
 import reactor.core.Reactor;
+import reactor.core.Reactor.Spec;
 import reactor.core.dynamic.annotation.Dispatcher;
 import reactor.core.dynamic.annotation.Notify;
 import reactor.core.dynamic.annotation.On;
@@ -39,18 +29,24 @@ import reactor.core.dynamic.reflect.MethodNotificationKeyResolver;
 import reactor.core.dynamic.reflect.MethodSelectorResolver;
 import reactor.core.dynamic.reflect.SimpleMethodNotificationKeyResolver;
 import reactor.core.dynamic.reflect.SimpleMethodSelectorResolver;
-import reactor.fn.Consumer;
-import reactor.fn.ConsumerInvoker;
-import reactor.fn.ConverterAwareConsumerInvoker;
-import reactor.fn.Event;
-import reactor.fn.Function;
-import reactor.fn.Registration;
-import reactor.fn.Selector;
-import reactor.support.Assert;
+import reactor.fn.*;
+import reactor.fn.dispatch.SynchronousDispatcher;
+import reactor.fn.registry.Registration;
+import reactor.fn.routing.ArgumentConvertingConsumerInvoker;
+import reactor.fn.routing.ConsumerInvoker;
+import reactor.fn.selector.Selector;
+import reactor.util.Assert;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.*;
+import java.util.concurrent.Callable;
 
 /**
  * A {@literal DynamicReactorFactory} is responsible for generating a {@link Proxy} based on the given interface, that
- * intercepts calls to the interface and translates them into the appropriate {@link Reactor#on(reactor.fn.Selector,
+ * intercepts calls to the interface and translates them into the appropriate {@link Reactor#on(reactor.fn.selector.Selector,
  * reactor.fn.Consumer)} or {@link Reactor#notify(Object, Event)} calls.
  *
  * @author Jon Brisbin
@@ -59,21 +55,30 @@ import reactor.support.Assert;
  */
 public class DynamicReactorFactory<T extends DynamicReactor> {
 
-	private final Class<T> type;
+	private final Environment                         env;
+	private final Class<T>                            type;
 	private final List<MethodSelectorResolver>        selectorResolvers;
 	private final List<MethodNotificationKeyResolver> notificationKeyResolvers;
-	private final Map<Method, DynamicMethod>          dynamicMethods           = new HashMap<Method, DynamicMethod>();
-	private volatile ConsumerInvoker                     consumerInvoker          = new ConverterAwareConsumerInvoker();
+	private final    Map<Method, DynamicMethod> dynamicMethods  = new HashMap<Method, DynamicMethod>();
+	private volatile ConsumerInvoker            consumerInvoker = ArgumentConvertingConsumerInvoker.DEFAULT;
 	private volatile Converter converter;
 
-	public DynamicReactorFactory(Class<T> type, List<MethodSelectorResolver> selectorResolvers, List<MethodNotificationKeyResolver> notificationKeyResolvers) {
+	public DynamicReactorFactory(Environment env,
+	                             Class<T> type,
+	                             List<MethodSelectorResolver> selectorResolvers,
+	                             List<MethodNotificationKeyResolver> notificationKeyResolvers) {
+		this.env = env;
 		this.type = type;
 		this.selectorResolvers = selectorResolvers;
 		this.notificationKeyResolvers = notificationKeyResolvers;
 	}
 
-	public DynamicReactorFactory(Class<T> type) {
-		this(type, Arrays.<MethodSelectorResolver>asList(new SimpleMethodSelectorResolver()), Arrays.<MethodNotificationKeyResolver>asList(new SimpleMethodNotificationKeyResolver()));
+	public DynamicReactorFactory(Environment env,
+	                             Class<T> type) {
+		this(env,
+				type,
+				Arrays.<MethodSelectorResolver>asList(new SimpleMethodSelectorResolver()),
+				Arrays.<MethodNotificationKeyResolver>asList(new SimpleMethodNotificationKeyResolver()));
 	}
 
 	/**
@@ -126,17 +131,13 @@ public class DynamicReactorFactory<T extends DynamicReactor> {
 		return this;
 	}
 
-	public T create() {
-		return create(R.create());
-	}
-
 	/**
 	 * Generate a {@link Proxy} based on the given interface.
 	 *
 	 * @return A proxy based on {@link #type}.
 	 */
-	@SuppressWarnings({"unchecked"})
-	public T create(Reactor reactor) {
+	@SuppressWarnings({"unchecked", "rawtypes"})
+	public T create() {
 		return (T) Proxy.newProxyInstance(
 				DynamicReactorFactory.class.getClassLoader(),
 				new Class[]{type},
@@ -167,7 +168,7 @@ public class DynamicReactorFactory<T extends DynamicReactor> {
 				if (isOn(m)) {
 					for (MethodSelectorResolver msr : selectorResolvers) {
 						if (msr.supports(m)) {
-							reactor.fn.Selector sel = msr.apply(m);
+							Selector sel = msr.apply(m);
 							if (null != sel) {
 								selectors.put(m, sel);
 								dynamicMethods.put(m, dm);
@@ -213,9 +214,9 @@ public class DynamicReactorFactory<T extends DynamicReactor> {
 				} else if (Function.class.isInstance(arg)) {
 					reg = reactor.receive(sel, (Function) arg);
 				} else if (Runnable.class.isInstance(arg)) {
-					reg = reactor.on(sel, Fn.<Event<Object>>compose((Runnable) arg));
+					reg = reactor.on(sel, Fn.<Event<Object>>consumer((Runnable) arg));
 				} else if (Callable.class.isInstance(arg)) {
-					reg = reactor.receive(sel, Fn.<Event<Object>>compose((Callable) arg));
+					reg = reactor.receive(sel, Fn.<Object>function((Callable) arg));
 				} else if (null == converter || !converter.canConvert(arg.getClass(), Consumer.class)) {
 					throw new IllegalArgumentException(
 							String.format("No Converter available to convert '%s' to Consumer", arg.getClass().getName())
@@ -232,7 +233,7 @@ public class DynamicReactorFactory<T extends DynamicReactor> {
 				if (args.length == 0) {
 					reactor.notify(key);
 				} else if (args.length == 1) {
-					reactor.notify(key, (Event.class.isInstance(args[0]) ? (Event) args[0] : Fn.event(args[0])));
+					reactor.notify(key, (Event.class.isInstance(args[0]) ? (Event) args[0] : Event.wrap(args[0])));
 				} else {
 					// TODO: handle multiple args
 				}
@@ -243,25 +244,12 @@ public class DynamicReactorFactory<T extends DynamicReactor> {
 			}
 		}
 
-		private Reactor createReactor(Dispatcher dispatcherType) {
-			reactor.fn.dispatch.Dispatcher dispatcher = null;
-			if (dispatcherType != null) {
-				switch (dispatcherType.value()) {
-					case WORKER:
-						dispatcher = Context.nextWorkerDispatcher();
-						break;
-					case THREAD_POOL:
-						dispatcher = Context.threadPoolDispatcher();
-						break;
-					case ROOT:
-						dispatcher = Context.rootDispatcher();
-						break;
-					case SYNC:
-						dispatcher = Context.synchronousDispatcher();
-						break;
-				}
+		private Reactor createReactor(Dispatcher dispatcherAnnotation) {
+			Spec reactorSpec = R.reactor().using(env);
+			if (dispatcherAnnotation != null) {
+				reactorSpec = reactorSpec.dispatcher(dispatcherAnnotation.value());
 			}
-			return new Reactor(dispatcher);
+			return reactorSpec.get();
 		}
 	}
 

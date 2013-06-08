@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+
 description = 'Reactor-based application framework for the JVM.'
 
 
@@ -21,7 +23,8 @@ ext {
 	gradleScriptDir = "${rootProject.projectDir}/gradle"
 
 	// Languages
-	groovyVersion = '2.1.1'
+
+	groovyVersion = '2.1.4'
     kotlinVersion = '0.5.748'
 
 	// Logging
@@ -30,9 +33,13 @@ ext {
 
 	// Libraries
 	disruptorVersion = '3.0.1'
-	springVersion = '3.2.2.RELEASE'
+	springVersion = '3.2.3.RELEASE'
+	nettyVersion = '4.0.0.Alpha8'
+	jacksonDatabindVersion = '2.2.1'
+	hadoopVersion = '1.1.2'
 
 	// Testing
+	mockitoVersion = '1.9.5'
 	spockVersion = '0.7-groovy-2.0'
 
 	// Code coverage
@@ -63,12 +70,12 @@ allprojects {
 
 	group = 'reactor'
 	repositories {
+		mavenLocal()
+		mavenCentral()
 		maven { url 'http://repo.springsource.org/libs-release' }
 		//maven { url 'http://repository.codehaus.org' }
 		//maven { url 'http://maven.java.net/content/repositories/snapshots' }
 		//maven { url 'http://oss.sonatype.org/content/repositories/releases' }
-		mavenCentral()
-		mavenLocal()
 	}
 }
 
@@ -139,7 +146,11 @@ subprojects { subproject ->
 	}
 
 	test {
-		jvmArgs "-javaagent:${configurations.jacoco.asPath}=destfile=${buildDir}/jacoco.exec,includes=reactor.*"
+		testLogging {
+			jvmArgs "-javaagent:${configurations.jacoco.asPath}=destfile=${buildDir}/jacoco.exec,includes=reactor.*"
+			events "failed"
+			exceptionFormat "full"
+		}
 	}
 }
 
@@ -185,13 +196,16 @@ project('reactor-spring') {
 }
 
 project('reactor-logback') {
-	description = 'Reactor async Logback appender implementation'
+	description = 'Disruptor-based Logback async appender implementation'
 	dependencies {
-		compile project(':reactor-core')
+		// High-speed Dispatching
+		compile "com.lmax:disruptor:$disruptorVersion"
 
+		// Logback
 		compile "ch.qos.logback:logback-classic:$logbackVersion"
 	}
 }
+
 
 project('reactor-kotlin'){
     apply plugin: 'kotlin'
@@ -201,3 +215,18 @@ project('reactor-kotlin'){
         compile "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
     }
 }
+
+project('reactor-tcp') {
+	description = 'Reactor TCP component'
+	dependencies {
+		compile project(':reactor-core')
+
+		compile "io.netty:netty:$nettyVersion"
+		compile("com.fasterxml.jackson.core:jackson-databind:$jacksonDatabindVersion", optional)
+		compile("org.apache.hadoop:hadoop-client:$hadoopVersion", optional)
+
+		testRuntime project(':reactor-logback')
+		testRuntime "org.slf4j:jcl-over-slf4j:$slf4jVersion"
+	}
+}
+

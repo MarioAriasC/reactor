@@ -5,101 +5,144 @@ import ch.qos.logback.core.Appender;
 import ch.qos.logback.core.UnsynchronizedAppenderBase;
 import ch.qos.logback.core.spi.AppenderAttachable;
 import ch.qos.logback.core.spi.AppenderAttachableImpl;
-import com.lmax.disruptor.BlockingWaitStrategy;
-import com.lmax.disruptor.dsl.ProducerType;
-import reactor.Fn;
-import reactor.core.Reactor;
-import reactor.fn.Consumer;
-import reactor.fn.Event;
-import reactor.fn.dispatch.Dispatcher;
-import reactor.fn.dispatch.RingBufferDispatcher;
+import com.lmax.disruptor.*;
 
 import java.util.Iterator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * @author Jon Brisbin
  */
 public class AsyncAppender extends UnsynchronizedAppenderBase<ILoggingEvent> implements AppenderAttachable<ILoggingEvent> {
 
-	private static final Dispatcher dispatcher;
-	private final AppenderAttachableImpl<ILoggingEvent> attachable      = new AppenderAttachableImpl<ILoggingEvent>();
-	private       boolean                               alreadyAttached = false;
-	private Reactor reactor;
-
-	static {
-		// We only need one thread for all appenders actually
-		dispatcher = new RingBufferDispatcher("log", 1, 1024, ProducerType.SINGLE, new BlockingWaitStrategy());
-	}
+	private final AppenderAttachableImpl<ILoggingEvent>    aai      = new AppenderAttachableImpl<ILoggingEvent>();
+	private final AtomicReference<Appender<ILoggingEvent>> delegate = new AtomicReference<Appender<ILoggingEvent>>();
+	private ExecutorService      threadPool;
+	private RingBuffer<LogEvent> ringBuffer;
+	private WorkerPool<LogEvent> workerPool;
 
 	public AsyncAppender() {
 	}
 
 	@Override
 	public void start() {
-		init();
+		this.threadPool = Executors.newCachedThreadPool(
+				new ThreadFactory() {
+					@Override
+					public Thread newThread(Runnable r) {
+						Thread t = new Thread(r);
+						t.setName("logback-ringbuffer-appender");
+						t.setPriority(Thread.MAX_PRIORITY);
+						t.setDaemon(true);
+						return t;
+					}
+				}
+		);
+
+		this.workerPool = new WorkerPool<LogEvent>(
+				new EventFactory<LogEvent>() {
+					@Override
+					public LogEvent newInstance() {
+						return new LogEvent();
+					}
+				},
+				new ExceptionHandler() {
+					@Override
+					public void handleEventException(Throwable throwable, long l, Object o) {
+						addError(throwable.getMessage(), throwable);
+					}
+
+					@Override
+					public void handleOnStartException(Throwable throwable) {
+						addError(throwable.getMessage(), throwable);
+					}
+
+					@Override
+					public void handleOnShutdownException(Throwable throwable) {
+						addError(throwable.getMessage(), throwable);
+					}
+				},
+				new LogEventHandler()
+		);
+		this.ringBuffer = workerPool.start(threadPool);
+
 		super.start();
 	}
 
 	@Override
 	public void stop() {
-		dispatcher.stop();
+		workerPool.halt();
+		threadPool.shutdown();
+
+		if (null != delegate.get()) {
+			delegate.get().stop();
+		}
+
 		super.stop();
 	}
 
 	@Override
 	protected void append(ILoggingEvent loggingEvent) {
-		loggingEvent.prepareForDeferredProcessing();
-		reactor.notify(Fn.event(loggingEvent));
+		if (null != delegate.get()) {
+			long seq = ringBuffer.next();
+			LogEvent evt = ringBuffer.get(seq);
+			evt.event = loggingEvent;
+			ringBuffer.publish(seq);
+		}
 	}
 
 	@Override
 	public void addAppender(Appender<ILoggingEvent> newAppender) {
-		if (!alreadyAttached) {
-			alreadyAttached = true;
-			attachable.addAppender(newAppender);
+		if (delegate.compareAndSet(null, newAppender)) {
+			aai.addAppender(newAppender);
 		} else {
-			addWarn("Cannot attach more than one Appender. Ignoring " + newAppender);
+			throw new IllegalArgumentException(delegate.get() + " already attached.");
 		}
 	}
 
 	@Override
 	public Iterator<Appender<ILoggingEvent>> iteratorForAppenders() {
-		return attachable.iteratorForAppenders();
+		return aai.iteratorForAppenders();
 	}
 
 	@Override
 	public Appender<ILoggingEvent> getAppender(String name) {
-		return attachable.getAppender(name);
+		return aai.getAppender(name);
 	}
 
 	@Override
 	public boolean isAttached(Appender<ILoggingEvent> appender) {
-		return attachable.isAttached(appender);
+		return aai.isAttached(appender);
 	}
 
 	@Override
 	public void detachAndStopAllAppenders() {
-		attachable.detachAndStopAllAppenders();
+		aai.detachAndStopAllAppenders();
 	}
 
 	@Override
 	public boolean detachAppender(Appender<ILoggingEvent> appender) {
-		return attachable.detachAppender(appender);
+		return aai.detachAppender(appender);
 	}
 
 	@Override
 	public boolean detachAppender(String name) {
-		return attachable.detachAppender(name);
+		return aai.detachAppender(name);
 	}
 
-	private void init() {
-		reactor = new Reactor(dispatcher);
-		reactor.on(new Consumer<Event<ILoggingEvent>>() {
-			@Override
-			public void accept(Event<ILoggingEvent> ev) {
-				attachable.appendLoopOnAppenders(ev.getData());
-			}
-		});
+	private static class LogEvent {
+		ILoggingEvent event;
+	}
+
+	private class LogEventHandler implements WorkHandler<LogEvent> {
+		@Override
+		public void onEvent(LogEvent logEvent) throws Exception {
+			aai.appendLoopOnAppenders(logEvent.event);
+			logEvent.event = null;
+		}
 	}
 
 }

@@ -18,7 +18,13 @@ package reactor.core;
 
 import org.hamcrest.Matcher;
 import org.junit.Test;
+import reactor.AbstractReactorTest;
+import reactor.S;
+import reactor.R;
 import reactor.fn.*;
+import reactor.fn.selector.Selector;
+import reactor.fn.support.Reduce;
+import reactor.fn.tuples.Tuple2;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -34,15 +40,15 @@ import static reactor.Fn.$;
 /**
  * @author Jon Brisbin
  */
-public class ComposableTests {
+public class ComposableTests extends AbstractReactorTest {
 
 	static final String2Integer STRING_2_INTEGER = new String2Integer();
 
 	@Test
 	public void testComposeFromSingleValue() throws InterruptedException {
-		Composable<String> c = Composable.from("Hello World!").build();
+		Stream<String> c = Streams.defer("Hello World!").get();
 
-		Deferred<String> d = c.map(new Function<String, String>() {
+		Stream<String> d = c.map(new Function<String, String>() {
 			@Override
 			public String apply(String s) {
 				return "Goodbye then!";
@@ -54,9 +60,9 @@ public class ComposableTests {
 
 	@Test
 	public void testComposeFromMultipleValues() throws InterruptedException {
-		Composable<Integer> c = Composable
-				.from(Arrays.asList("1", "2", "3", "4", "5"))
-				.build()
+		Stream<Integer> c = S
+				.each(Arrays.asList("1", "2", "3", "4", "5"))
+				.get()
 				.map(STRING_2_INTEGER)
 				.map(new Function<Integer, Integer>() {
 					int sum = 0;
@@ -67,15 +73,14 @@ public class ComposableTests {
 						return sum;
 					}
 				});
-
 		await(c, is(15));
 	}
 
 	@Test
 	public void testComposeFromMultipleFilteredValues() throws InterruptedException {
-		Composable<Integer> c = Composable
-				.from(Arrays.asList("1", "2", "3", "4", "5"))
-				.build()
+		Stream<Integer> c = S
+				.each(Arrays.asList("1", "2", "3", "4", "5"))
+				.get()
 				.map(STRING_2_INTEGER)
 				.filter(new Function<Integer, Boolean>() {
 
@@ -91,9 +96,11 @@ public class ComposableTests {
 
 	@Test
 	public void testComposedErrorHandlingWithMultipleValues() throws InterruptedException {
-		Composable<Integer> c = Composable
-				.from(Arrays.asList("1", "2", "3", "4", "5"))
-				.build()
+		Stream<Integer> c = S
+				.each(Arrays.asList("1", "2", "3", "4", "5"))
+				.using(env)
+				.dispatcher("eventLoop")
+				.get()
 				.map(STRING_2_INTEGER)
 				.map(new Function<Integer, Integer>() {
 					int sum = 0;
@@ -113,20 +120,20 @@ public class ComposableTests {
 
 	@Test
 	public void valueIsImmediatelyAvailable() throws InterruptedException {
-		Composable<String> c = Composable.from(Arrays.asList("1", "2", "3", "4", "5")).build();
+		Stream<String> c = S.each(Arrays.asList("1", "2", "3", "4", "5")).get();
 
 		await(c, is("5"));
 	}
 
 	@Test
 	public void testReduce() throws InterruptedException {
-		Composable<Integer> c = Composable
-				.from(Arrays.asList("1", "2", "3", "4", "5"))
-				.build()
+		Stream<Integer> c = S
+				.each(Arrays.asList("1", "2", "3", "4", "5"))
+				.get()
 				.map(STRING_2_INTEGER)
-				.reduce(new Function<Composable.Reduce<Integer, Integer>, Integer>() {
+				.reduce(new Function<Reduce<Integer, Integer>, Integer>() {
 					@Override
-					public Integer apply(Composable.Reduce<Integer, Integer> r) {
+					public Integer apply(Reduce<Integer, Integer> r) {
 						return ((null != r.getLastValue() ? r.getLastValue() : 1) * r.getNextValue());
 					}
 				});
@@ -136,13 +143,13 @@ public class ComposableTests {
 
 	@Test
 	public void testFirstAndLast() throws InterruptedException {
-		Composable<Integer> c = Composable
-				.from(Arrays.asList("1", "2", "3", "4", "5"))
-				.build()
+		Stream<Integer> c = S
+				.each(Arrays.asList("1", "2", "3", "4", "5"))
+				.get()
 				.map(STRING_2_INTEGER);
 
-		Deferred<Integer> first = c.first();
-		Deferred<Integer> last = c.last();
+		Stream<Integer> first = c.first();
+		Stream<Integer> last = c.last();
 
 		await(first, is(1));
 		await(last, is(5));
@@ -150,23 +157,22 @@ public class ComposableTests {
 
 	@Test
 	public void testRelaysEventsToReactor() throws InterruptedException {
-		Reactor r = R.create();
-		Object key = new Object();
-		Selector sel = $(key);
+		Reactor r = R.reactor().get();
+		Tuple2<Selector, Object> key = $();
 
 		final CountDownLatch latch = new CountDownLatch(5);
-		r.on(sel, new Consumer<Event<Integer>>() {
+		r.on(key.getT1(), new Consumer<Event<Integer>>() {
 			@Override
 			public void accept(Event<Integer> integerEvent) {
 				latch.countDown();
 			}
 		});
 
-		Composable<Integer> c = Composable
-				.from(Arrays.asList("1", "2", "3", "4", "5"))
-				.build()
+		Stream<Integer> c = S
+				.each(Arrays.asList("1", "2", "3", "4", "5"))
+				.get()
 				.map(STRING_2_INTEGER)
-				.consume(key, r);
+				.consume(key.getT2(), r);
 
 		c.get(); // Trigger the deferred value to be set
 
@@ -177,9 +183,9 @@ public class ComposableTests {
 
 	@Test
 	public void composableWithInitiallyUnknownNumberOfValues() throws InterruptedException {
-		final Composable<Integer> c = Composable
-				.from(new TestIterable<String>("1", "2", "3", "4", "5"))
-				.build()
+		final Stream<Integer> c = S
+				.each(new TestIterable<String>("1", "2", "3", "4", "5"))
+				.get()
 				.map(STRING_2_INTEGER)
 				.map(new Function<Integer, Integer>() {
 					int sum = 0;
@@ -206,9 +212,13 @@ public class ComposableTests {
 		await(c, is(15));
 	}
 
-	<T> void await(Deferred<T> d, Matcher<T> expected) throws InterruptedException {
+	<T> void await(Stream<T> d, Matcher<T> expected) throws InterruptedException {
 		long startTime = System.currentTimeMillis();
-		T result = d.await(1, TimeUnit.SECONDS);
+		T result = null;
+		try {
+			result = d.await(1, TimeUnit.SECONDS);
+		} catch (Exception e) {
+		}
 		long duration = System.currentTimeMillis() - startTime;
 
 		assertThat(result, expected);
@@ -217,7 +227,7 @@ public class ComposableTests {
 
 	static class String2Integer implements Function<String, Integer> {
 		@Override
-		public Integer apply(String s) {
+		public Integer apply(String s){
 			return Integer.parseInt(s);
 		}
 	}

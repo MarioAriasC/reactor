@@ -18,11 +18,9 @@ package reactor;
 
 import groovy.lang.Closure;
 import groovy.lang.GString;
-import reactor.fn.Consumer;
-import reactor.fn.Event;
-import reactor.fn.Function;
-import reactor.fn.Selector;
-import reactor.fn.selector.BaseSelector;
+import reactor.fn.*;
+import reactor.fn.selector.ObjectSelector;
+import reactor.fn.selector.Selector;
 
 /**
  * @author Jon Brisbin
@@ -34,15 +32,15 @@ public abstract class GroovyTestUtils {
 	}
 
 	public static Selector $(long l) {
-		return new BaseSelector<Long>(l);
+		return new ObjectSelector<Long>(l);
 	}
 
 	public static Selector $(String s) {
-		return new BaseSelector<String>(s);
+		return new ObjectSelector<String>(s);
 	}
 
 	public static Selector $(GString s) {
-		return new BaseSelector<String>(s.toString());
+		return new ObjectSelector<String>(s.toString());
 	}
 
 	@SuppressWarnings({"rawtypes"})
@@ -97,6 +95,17 @@ public abstract class GroovyTestUtils {
 				}
 
 				return cl.call(arg);
+			}
+		};
+	}
+
+	public static <V> Supplier<V> supplier(final Closure<V> cl) {
+		return new Supplier<V>() {
+
+			@Override
+			@SuppressWarnings({"unchecked"})
+			public V get() {
+				return cl.call();
 			}
 		};
 	}

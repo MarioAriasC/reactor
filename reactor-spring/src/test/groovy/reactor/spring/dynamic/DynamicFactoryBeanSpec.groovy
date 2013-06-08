@@ -19,10 +19,12 @@ package reactor.spring.dynamic
 import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import reactor.core.Environment
 import reactor.core.dynamic.annotation.DispatcherType
 import reactor.core.dynamic.DynamicReactor
 import reactor.core.dynamic.annotation.Dispatcher
 import reactor.fn.Consumer
+import spock.lang.Shared
 import spock.lang.Specification
 
 import java.util.concurrent.CountDownLatch
@@ -30,6 +32,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * @author Jon Brisbin
+ * @author Stephane Maldini
  */
 class DynamicFactoryBeanSpec extends Specification {
 
@@ -54,7 +57,7 @@ class DynamicFactoryBeanSpec extends Specification {
 
 }
 
-@Dispatcher(DispatcherType.THREAD_POOL)
+@Dispatcher(Environment.THREAD_POOL)
 interface TestReactor extends DynamicReactor {
 	TestReactor onTest(Consumer<String> consumer)
 
@@ -65,6 +68,6 @@ interface TestReactor extends DynamicReactor {
 class TestReactorConfig {
 	@Bean
 	DynamicReactorFactoryBean<TestReactor> testReactorFactoryBean() {
-		return new DynamicReactorFactoryBean<TestReactor>(TestReactor)
+		return new DynamicReactorFactoryBean<TestReactor>(new Environment(), TestReactor)
 	}
 }

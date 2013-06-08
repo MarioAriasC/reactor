@@ -16,135 +16,100 @@
 
 package reactor.fn.dispatch;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import reactor.fn.*;
-import reactor.support.QueueFactory;
-
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import reactor.fn.Event;
+import reactor.fn.Supplier;
+import reactor.fn.cache.Cache;
+import reactor.fn.cache.LoadingCache;
+import reactor.support.QueueFactory;
 
 /**
  * Implementation of {@link Dispatcher} that uses a {@link BlockingQueue} to queue tasks to be executed.
  *
  * @author Jon Brisbin
  * @author Stephane Maldini
+ * @author Andy Wilkinson
  */
-public class BlockingQueueDispatcher implements Dispatcher {
+@SuppressWarnings("rawtypes")
+public final class BlockingQueueDispatcher extends AbstractDispatcher {
 
-	private final static AtomicInteger THREAD_COUNT = new AtomicInteger();
+	private static final AtomicInteger INSTANCE_COUNT = new AtomicInteger();
 
-	private final ThreadGroup     threadGroup = new ThreadGroup("reactor-dispatcher");
-	private final ConsumerInvoker invoker     = new ConverterAwareConsumerInvoker();
+	private final ThreadGroup         threadGroup = new ThreadGroup("eventloop");
+	private final BlockingQueue<Task> taskQueue   = QueueFactory.createQueue();
+	private final Cache<Task> readyTasks;
+	private final Thread      taskExecutor;
 
-	private final BlockingQueue<Task<?>> readyTasks;
-	private final TaskExecutor           taskExecutor;
-
+	/**
+	 * Creates a new {@literal BlockingQueueDispatcher} with the given {@literal name} and {@literal backlog}.
+	 *
+	 * @param name    The name
+	 * @param backlog The backlog size
+	 */
 	public BlockingQueueDispatcher(String name, int backlog) {
-		this.readyTasks = QueueFactory.createQueue();
-		String threadName = name + "-dispatcher-" + THREAD_COUNT.incrementAndGet();
-		this.taskExecutor = new TaskExecutor(threadGroup, threadName);
+		this.readyTasks = new LoadingCache<Task>(
+				new Supplier<Task>() {
+					@Override
+					public Task get() {
+						return new BlockingQueueTask();
+					}
+				},
+				backlog,
+				150l
+		);
+		String threadName = name + "-dispatcher-" + INSTANCE_COUNT.incrementAndGet();
 
-		for (int i = 0; i < Math.max(backlog, 64); i++) {
-			this.readyTasks.add(new BlockingQueueTask<Object>());
-		}
-		this.start();
-	}
-
-	Task<?> steal() {
-		return taskExecutor.taskQueue.poll();
+		this.taskExecutor = new Thread(threadGroup, new TaskExecutingRunnable(), threadName);
+		this.taskExecutor.setDaemon(true);
+		this.taskExecutor.setPriority(Thread.NORM_PRIORITY);
+		this.taskExecutor.start();
 	}
 
 	@Override
-	@SuppressWarnings({"unchecked"})
-	public <T> Task<T> nextTask() {
-		Task<?> t;
-		try {
-			do {
-				t = readyTasks.poll(200, TimeUnit.MILLISECONDS);
-			} while (null == t);
-			return (Task<T>) t;
-		} catch (InterruptedException e) {
-			return new BlockingQueueTask<T>();
-		}
+	public void shutdown() {
+		taskExecutor.interrupt();
+		super.shutdown();
 	}
 
-	private class BlockingQueueTask<T> extends Task<T> {
+	@Override
+	public void halt() {
+		taskExecutor.interrupt();
+		super.halt();
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	protected <E extends Event<?>> Task<E> createTask() {
+		Task t = readyTasks.allocate();
+		return (null != t ? t : new BlockingQueueTask());
+	}
+
+	private class BlockingQueueTask<E extends Event<?>> extends Task<E> {
+
 		@Override
 		public void submit() {
-			taskExecutor.taskQueue.add(this);
+			taskQueue.add(this);
 		}
 	}
 
-	@Override
-	public BlockingQueueDispatcher destroy() {
-		return this;
-	}
-
-	@Override
-	public BlockingQueueDispatcher stop() {
-		taskExecutor.interrupt();
-		return this;
-	}
-
-	@Override
-	public BlockingQueueDispatcher start() {
-		taskExecutor.start();
-		return this;
-	}
-
-	@Override
-	public boolean isAlive() {
-		return true;
-	}
-
-	private class TaskExecutor extends Thread {
-		private final BlockingQueue<Task<?>> taskQueue;
-
-		private TaskExecutor(ThreadGroup group,
-												 String name) {
-			super(group, name);
-			this.taskQueue = QueueFactory.createQueue();
-			setDaemon(true);
-			setPriority(Thread.MAX_PRIORITY);
-		}
-
+	private class TaskExecutingRunnable implements Runnable {
 		@Override
 		public void run() {
-			Task<?> t = null;
-			while (true) {
+			Task t = null;
+			for (; ; ) {
 				try {
 					t = taskQueue.poll(200, TimeUnit.MILLISECONDS);
 					if (null != t) {
-						try {
-							for (Registration<? extends Consumer<? extends Event<?>>> reg : t.getConsumerRegistry().select(t.getKey())) {
-								if (reg.isCancelled() || reg.isPaused()) {
-									continue;
-								}
-								if (null != reg.getSelector().getHeaderResolver()) {
-									t.getEvent().getHeaders().setAll(reg.getSelector().getHeaderResolver().resolve(t.getKey()));
-								}
-								invoker.invoke(reg.getObject(), t.getConverter(), Void.TYPE, t.getEvent());
-								if (reg.isCancelAfterUse()) {
-									reg.cancel();
-								}
-							}
-							if (null != t.getCompletionConsumer()) {
-								invoker.invoke(t.getCompletionConsumer(), t.getConverter(), Void.TYPE, t.getEvent());
-							}
-						} catch (Throwable x) {
-							Logger log = LoggerFactory.getLogger(BlockingQueueDispatcher.class);
-							if (log.isErrorEnabled()) {
-								log.error(x.getMessage(), x);
-							}
-							if (null != t.getErrorConsumer()) {
-								t.getErrorConsumer().accept(x);
-							}
-						}
+						t.execute();
 					}
 				} catch (InterruptedException e) {
-					interrupt();
+					break;
 				} catch (Exception e) {
 					Logger log = LoggerFactory.getLogger(BlockingQueueDispatcher.class);
 					if (log.isErrorEnabled()) {
@@ -153,10 +118,12 @@ public class BlockingQueueDispatcher implements Dispatcher {
 				} finally {
 					if (null != t) {
 						t.reset();
-						readyTasks.add(t);
+						readyTasks.deallocate(t);
 					}
 				}
 			}
+			Thread.currentThread().interrupt();
 		}
 	}
+
 }

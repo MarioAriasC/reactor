@@ -17,8 +17,8 @@
 package reactor.core.dynamic.reflect;
 
 import reactor.fn.Function;
-import reactor.fn.Selector;
-import reactor.fn.Supports;
+import reactor.fn.selector.Selector;
+import reactor.support.Supports;
 
 import java.lang.reflect.Method;
 

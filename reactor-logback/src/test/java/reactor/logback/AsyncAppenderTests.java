@@ -1,13 +1,18 @@
 package reactor.logback;
 
+import ch.qos.logback.classic.Logger;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
-import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Random;
-
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.lessThan;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * @author Jon Brisbin
@@ -28,15 +33,57 @@ public class AsyncAppenderTests {
 		MSG = new String(chars);
 	}
 
+	final int timeout = 5;
+	ExecutorService threadPool;
+
+	@Before
+	public void setup() {
+		threadPool = Executors.newCachedThreadPool();
+	}
+
+	@After
+	public void cleanup() {
+		threadPool.shutdownNow();
+	}
+
 	@Test
-	public void asyncAppenderLogsAsynchronously() {
-		Logger log = LoggerFactory.getLogger(AsyncAppenderTests.class);
+	public void clockAsyncAppender() throws InterruptedException {
+		long n = benchmarkThread((Logger) LoggerFactory.getLogger("reactor"), timeout);
+		System.out.println("async: " + (n / timeout) + "/sec");
+	}
 
-		long start = System.currentTimeMillis();
-		log.info(MSG);
-		long end = System.currentTimeMillis();
+	@Test
+	public void clockSyncAppender() throws InterruptedException {
+		long m = benchmarkThread((Logger) LoggerFactory.getLogger("sync"), timeout);
+		System.out.println("sync: " + (m / timeout) + "/sec");
+	}
 
-		assertThat("Time for call is too short to have done blocking IO", (end - start), lessThan(15L));
+	@Ignore
+	@Test
+	public void clockBothAppenders() throws InterruptedException {
+		clockSyncAppender();
+		clockAsyncAppender();
+	}
+
+	private long benchmarkThread(final Logger logger, int timeout) throws InterruptedException {
+		final CountDownLatch latch = new CountDownLatch(1);
+		final AtomicLong throughput = new AtomicLong(0);
+
+		int threads = Runtime.getRuntime().availableProcessors();
+		for (int i = 0; i < threads; i++) {
+			threadPool.submit(new Runnable() {
+				@Override
+				public void run() {
+					while (latch.getCount() > 0) {
+						logger.warn("" + throughput.incrementAndGet());
+					}
+				}
+			});
+		}
+
+		latch.await(timeout, TimeUnit.SECONDS);
+		latch.countDown();
+		return throughput.get();
 	}
 
 }
