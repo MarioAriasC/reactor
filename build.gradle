@@ -15,12 +15,14 @@
  */
 description = 'Reactor-based application framework for the JVM.'
 
+
 ext {
 	gradleVersion = '1.6'
 	gradleScriptDir = "${rootProject.projectDir}/gradle"
 
 	// Languages
 	groovyVersion = '2.1.1'
+    kotlinVersion = '0.5.748'
 
 	// Logging
 	slf4jVersion = '1.7.5'
@@ -35,6 +37,18 @@ ext {
 
 	// Code coverage
 	jacocoVersion = '0.6.2.201302030002'
+}
+
+buildscript {
+    repositories {
+        mavenCentral()
+        maven {
+            url 'http://repository.jetbrains.com/all'
+        }
+    }
+    dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:0.5.429"
+    }
 }
 
 apply from: "$gradleScriptDir/setup.gradle"
@@ -177,4 +191,13 @@ project('reactor-logback') {
 
 		compile "ch.qos.logback:logback-classic:$logbackVersion"
 	}
+}
+
+project('reactor-kotlin'){
+    apply plugin: 'kotlin'
+    description = 'Reactor Kotlin components'
+    dependencies {
+        compile project(':reactor-core')
+        compile "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+    }
 }
